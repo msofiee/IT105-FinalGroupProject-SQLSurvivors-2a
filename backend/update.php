@@ -1,0 +1,36 @@
+<?php
+session_start();
+
+if (!isset($_SESSION['user_id'])) {
+    http_response_code(403);
+    exit('Unauthorized');
+}
+
+require_once 'db_connect.php';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $product_id = $_POST['product_id'];
+    $sku = $_POST['sku'];
+    $product_name = $_POST['product_name'];
+    $category_id = $_POST['category_id'];
+    $supplier_id = $_POST['supplier_id'];
+    $unit_price = $_POST['unit_price'];
+    $current_stock = $_POST['current_stock'];
+
+    $stmt = $pdo->prepare(
+        'UPDATE products SET sku=?, product_name=?, category_id=?, supplier_id=?, unit_price=?, current_stock=? WHERE product_id=?'
+    );
+    $stmt->execute([
+        $sku,
+        $product_name,
+        $category_id,
+        $supplier_id,
+        $unit_price,
+        $current_stock,
+        $product_id
+    ]);
+
+    header('Location: ../frontend/dashboard.php?msg=updated');
+    exit;
+}
+?>
