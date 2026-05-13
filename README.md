@@ -24,7 +24,7 @@ Development Team
 
 | Jamella Fortes & Francine Mae Pranada| QA/Tester | Link verification & Repository monitoring |
 
-| Isabel Mayelin Arickx & Marife Son | Documentation Lead | File organization & README management |
+| Isabel Mayelin Arickx | Documentation Lead | File organization & README management |
 
 
 👨‍🏫 Instructor Information
