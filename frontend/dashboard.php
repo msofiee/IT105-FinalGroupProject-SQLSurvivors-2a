@@ -8,17 +8,55 @@ if (!isset($_SESSION['user_id'])) {
 
 require_once '../backend/db_connect.php';
 
+// ==================== INDEX OPTIMIZATION DEMO ====================
+// Ensure index on products.product_name exists for benchmarking
+$index_check = $pdo->query("SHOW INDEX FROM products WHERE Key_name = 'idx_product_name'");
+if ($index_check->rowCount() == 0) {
+    $pdo->exec("ALTER TABLE products ADD INDEX idx_product_name (product_name)");
+}
+
+if (isset($_GET['benchmark']) && isset($_GET['search_name'])) {
+    $search_term = trim($_GET['search_name']);
+    if ($search_term === '') {
+        header("Location: dashboard.php?msg=" . urlencode("Please enter a product name to search."));
+        exit();
+    }
+    $like = "$search_term%";
+    $use_index = $_GET['benchmark'] === 'with_index';
+    
+    $start = microtime(true);
+    if ($use_index) {
+        $sql = "SELECT * FROM products FORCE INDEX (idx_product_name) WHERE product_name LIKE :like";
+    } else {
+        $sql = "SELECT * FROM products IGNORE INDEX (idx_product_name) WHERE product_name LIKE :like";
+    }
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['like' => $like]);
+    $count = $stmt->rowCount();
+    $end = microtime(true);
+    $time_ms = round(($end - $start) * 1000, 2);
+    
+    // Get EXPLAIN to see which index is used
+    $explain_stmt = $pdo->prepare("EXPLAIN " . str_replace(':like', "'$like'", $sql));
+    $explain_stmt->execute();
+    $explain_row = $explain_stmt->fetch(PDO::FETCH_ASSOC);
+    $key_used = $explain_row['key'] ?? 'NONE';
+    
+    $msg = "🔍 Search for product name starting with '{$search_term}' | Records: {$count} | Time: {$time_ms} ms | Index used: " . ($key_used ?: 'NO INDEX');
+    header("Location: dashboard.php?msg=" . urlencode($msg));
+    exit();
+}
+
+// Regular product search logic
 $search = trim($_GET['search'] ?? '');
 
 if (isset($_GET['search']) && $search !== '') {
-
     $stmt = $pdo->prepare("
         INSERT INTO audit_log
         (action_type, table_name, row_id, old_value, new_value)
         VALUES
         ('SEARCH', 'products', NULL, NULL, :new_value)
     ");
-
     $stmt->execute([
         'new_value' => json_encode([
             'query' => $search
@@ -64,26 +102,52 @@ $customers = $pdo->query('SELECT customer_id, customer_name FROM customers')->fe
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Inventory Dashboard</title>
     <link rel="stylesheet" href="styles.css">
+    <style>
+        .alert { padding: 12px; border-radius: 4px; margin: 10px 0; }
+        .alert-success { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .alert-info { background: #d1ecf1; border: 1px solid #bee5eb; color: #0c5460; }
+        .demo-card { background: #f8f9fc; border: 1px solid #cce5ff; border-radius: 8px; padding: 15px 20px; margin: 20px 0; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+        .demo-card h4 { margin: 0 0 8px 0; color: #0056b3; }
+        .demo-btn { background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        .demo-btn:hover { background: #0056b3; }
+        .demo-btn.without { background: #6c757d; }
+        .demo-btn.without:hover { background: #5a6268; }
+        small { font-size: 12px; color: #555; }
+    </style>
 </head>
 <body>
 <div class="container">
-        <div class="topbar">
-        	<h1>Inventory Dashboard</h1>
-        	<div class="user">
-            	<span><?= htmlspecialchars($_SESSION['username']) ?></span>
-            	<a href="audit.php">Audit Log</a>
-            	<a href="logout.php">Logout</a>
-        	</div>
+    <div class="topbar">
+        <h1>Inventory Dashboard</h1>
+        <div class="user">
+            <span><?= htmlspecialchars($_SESSION['username']) ?></span>
+            <a href="audit.php">Audit Log</a>
+            <a href="logout.php">Logout</a>
+        </div>
     </div>
 
+    <?php if (isset($_GET['msg'])): 
+        $msg_class = (strpos($_GET['msg'], '🔍') !== false) ? 'alert-info' : 'alert-success'; ?>
+        <div class="alert <?= $msg_class ?>"><?= htmlspecialchars($_GET['msg']) ?></div>
+    <?php endif; ?>
+
+    <!-- Index Optimization Demo Card -->
+    <div class="demo-card">
+        <div style="flex: 2; min-width: 200px;">
+            <h4>📊 Index Optimization Demo (product_name)</h4>
+            <form method="get" action="dashboard.php" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                <input type="text" name="search_name" placeholder="Product name starts with (e.g., Laptop)" required style="padding: 8px; border:1px solid #ccc; border-radius:4px; flex:2;">
+                <button type="submit" name="benchmark" value="without_index" class="demo-btn without">Without Index</button>
+                <button type="submit" name="benchmark" value="with_index" class="demo-btn">With Index</button>
+            </form>
+            <small>🔍 Compares search speed with/without index on `product_name`. Shows execution time & EXPLAIN key used.</small>
+        </div>
+    </div>
+
+    <!-- Existing Search Form -->
     <div class="card">
         <form method="GET" class="search-form">
-            <input
-                type="text"
-                name="search"
-                placeholder="Search products..."
-                value="<?= htmlspecialchars($search) ?>"
-            >
+            <input type="text" name="search" placeholder="Search products..." value="<?= htmlspecialchars($search) ?>">
             <button type="submit">Search</button>
         </form>
     </div>
@@ -124,7 +188,6 @@ $customers = $pdo->query('SELECT customer_id, customer_name FROM customers')->fe
                 </tbody>
             </table>
         </div>
-
         <div class="pagination" id="pagination"></div>
     </div>
 
@@ -156,7 +219,6 @@ $customers = $pdo->query('SELECT customer_id, customer_name FROM customers')->fe
                         <option value="<?= $cust['customer_id'] ?>"><?= htmlspecialchars($cust['customer_name']) ?></option>
                     <?php endforeach; ?>
                 </select>
-
                 <select name="product_id" required>
                     <option value="">Select Product</option>
                     <?php foreach ($products as $prod): ?>
@@ -165,14 +227,13 @@ $customers = $pdo->query('SELECT customer_id, customer_name FROM customers')->fe
                         </option>
                     <?php endforeach; ?>
                 </select>
-
                 <input type="number" name="quantity" placeholder="Quantity" required>
                 <button type="submit">Create Sale</button>
             </form>
         </div>
     </div>
 
-    <div class="card" id="updateForm">
+    <div class="card" id="updateForm" style="display:none;">
         <h3>Update Product</h3>
         <form action="../backend/update.php" method="POST">
             <input type="hidden" name="product_id" id="update_id">
@@ -190,14 +251,6 @@ $customers = $pdo->query('SELECT customer_id, customer_name FROM customers')->fe
             <button type="button" onclick="document.getElementById('updateForm').style.display='none'">Cancel</button>
         </form>
     </div>
-
-    <?php if (isset($_GET['msg'])): ?>
-        <p class="success">Operation successful!</p>
-    <?php endif; ?>
-
-    <?php if (isset($_GET['error'])): ?>
-        <p class="error"><?= htmlspecialchars($_GET['error']) ?></p>
-    <?php endif; ?>
 </div>
 
 <script>
@@ -210,11 +263,7 @@ function editProduct(product) {
     document.getElementById('update_price').value = product.unit_price;
     document.getElementById('update_stock').value = product.current_stock;
     document.getElementById('updateForm').style.display = 'block';
-
-    window.scrollTo({
-        top: document.getElementById('updateForm').offsetTop - 20,
-        behavior: 'smooth',
-    });
+    window.scrollTo({ top: document.getElementById('updateForm').offsetTop - 20, behavior: 'smooth' });
 }
 
 const rowsPerPage = 5;
@@ -225,33 +274,27 @@ let currentPage = 1;
 
 function changePage(page) {
     if (page < 1 || page > totalPages) return;
-
     currentPage = page;
     const start = (page - 1) * rowsPerPage;
     const end = start + rowsPerPage;
-
     rows.forEach((row, index) => {
         row.style.display = index >= start && index < end ? '' : 'none';
     });
-
     renderPagination();
 }
 
 function renderPagination() {
+    if (!pagination) return;
     pagination.innerHTML = '';
-
     const prevBtn = document.createElement('button');
     prevBtn.innerText = 'Previous';
     prevBtn.disabled = currentPage === 1;
     prevBtn.onclick = () => changePage(currentPage - 1);
     pagination.appendChild(prevBtn);
-
     let startPage = Math.max(1, currentPage - 1);
     let endPage = Math.min(totalPages, currentPage + 1);
-
     if (currentPage === 1) endPage = Math.min(3, totalPages);
     if (currentPage === totalPages) startPage = Math.max(1, totalPages - 2);
-
     for (let i = startPage; i <= endPage; i++) {
         const btn = document.createElement('button');
         btn.innerText = i;
@@ -259,7 +302,6 @@ function renderPagination() {
         btn.onclick = () => changePage(i);
         pagination.appendChild(btn);
     }
-
     const nextBtn = document.createElement('button');
     nextBtn.innerText = 'Next';
     nextBtn.disabled = currentPage === totalPages;
@@ -271,4 +313,3 @@ changePage(1);
 </script>
 </body>
 </html>
-
